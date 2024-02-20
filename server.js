@@ -14,6 +14,7 @@ const Users = database.Users;
 const Bots = database.Bots;
 const sequelize = database.sequelize;
 const Sequelize = require('sequelize');
+const { request } = require("http");
 const Op = Sequelize.Op;
 
 const get_secure_random_string = require('./utils.js').get_secure_random_string;
@@ -292,12 +293,12 @@ const options = {
         async beforeSendRequest(requestDetail) {
             const remote_address = requestDetail._req.connection.remoteAddress;
 
-            const auth_details = await get_authentication_status(requestDetail.requestOptions.headers);
+            // const auth_details = await get_authentication_status(requestDetail.requestOptions.headers);
 
-            if (!auth_details) {
-                logit(`[${remote_address}] Request denied for URL ${requestDetail.url}, no authentication information provided in proxy HTTP request!`);
-                return AUTHENTICATION_REQUIRED_PROXY_RESPONSE;
-            }
+            // if (!auth_details) {
+            //     logit(`[${remote_address}] Request denied for URL ${requestDetail.url}, no authentication information provided in proxy HTTP request!`);
+            //     return AUTHENTICATION_REQUIRED_PROXY_RESPONSE;
+            // }
 
             // Send base64-encoded body if there's any data to
             // send, otherwise set it to false.
@@ -305,47 +306,47 @@ const options = {
                 requestDetail.requestData.length > 0
             ) ? requestDetail.requestData.toString('base64') : false;
 
-            logit(`[${auth_details.id}][${auth_details.name}] Proxying request ${requestDetail._req.method} ${requestDetail.url}`);
-            const response = await send_request_via_browser(
-                auth_details.browser_id,
-                true,
-                requestDetail.url,
-                requestDetail.requestOptions.method,
-                requestDetail.requestOptions.headers,
-                body
-            );
+            logit(`Proxying request ${requestDetail._req.method} ${requestDetail.url} ${requestDetail.requestData}`);
+            // const response = await send_request_via_browser(
+            //     auth_details.browser_id,
+            //     true,
+            //     requestDetail.url,
+            //     requestDetail.requestOptions.method,
+            //     requestDetail.requestOptions.headers,
+            //     body
+            // );
 
-            // For connection errors
-            if (!response) {
-                logit(`[${auth_details.id}][${auth_details.name}] A connection error occurred while requesting ${requestDetail._req.method} ${requestDetail.url}`);
-                return {
-                    response: {
-                        statusCode: 503,
-                        header: {
-                            'Content-Type': 'text/plain',
-                            'X-Frame-Options': 'DENY'
-                        },
-                        body: (new Buffer(`CursedChrome encountered an error while requesting the page.`))
-                    }
-                };
-            }
+            // // For connection errors
+            // if (!response) {
+            //     logit(`[${auth_details.id}][${auth_details.name}] A connection error occurred while requesting ${requestDetail._req.method} ${requestDetail.url}`);
+            //     return {
+            //         response: {
+            //             statusCode: 503,
+            //             header: {
+            //                 'Content-Type': 'text/plain',
+            //                 'X-Frame-Options': 'DENY'
+            //             },
+            //             body: (new Buffer(`CursedChrome encountered an error while requesting the page.`))
+            //         }
+            //     };
+            // }
 
-            logit(`[${auth_details.id}][${auth_details.name}] Got response ${response.status} ${requestDetail.url}`);
+            // logit(`[${auth_details.id}][${auth_details.name}] Got response ${response.status} ${requestDetail.url}`);
 
-            let encoded_body_buffer = new Buffer(response.body, 'base64');
-            let decoded_body = encoded_body_buffer.toString('ascii');
+            // let encoded_body_buffer = new Buffer(response.body, 'base64');
+            // let decoded_body = encoded_body_buffer.toString('ascii');
 
-            if ('content-encoding' in response.headers) {
-                delete response.headers['content-encoding'];
-            }
+            // if ('content-encoding' in response.headers) {
+            //     delete response.headers['content-encoding'];
+            // }
 
-            return {
-                response: {
-                    statusCode: response.status,
-                    header: response.headers,
-                    body: encoded_body_buffer
-                }
-            };
+            // return {
+            //     response: {
+            //         statusCode: response.status,
+            //         header: response.headers,
+            //         body: encoded_body_buffer
+            //     }
+            // };
         },
     },
     webInterface: {
@@ -355,7 +356,7 @@ const options = {
     //throttle: 10000,
     forceProxyHttps: true,
     wsIntercept: false,
-    silent: true
+    silent: false
 };
 
 async function initialize_new_browser_connection(ws) {
@@ -429,145 +430,7 @@ async function initialize() {
     // Used for distributing the TCP connection workload across
     // multiple servers which use one redis instance as the core
     // pubsub system.
-    redis_client = redis.createClient({
-        "host": process.env.REDIS_HOST,
-    });
-    redis_client.on("error", function(error) {
-        logit(`Redis client encountered an error:`);
-        console.error(error);
-    });
-    subscriber = redis.createClient({
-        "host": process.env.REDIS_HOST,
-    });
-    publisher = redis.createClient({
-        "host": process.env.REDIS_HOST,
-    });
 
-    // Promisify Node redis calls, these are intentionally global
-    getAsync = util.promisify(redis_client.get).bind(redis_client);
-    setexAsync = util.promisify(redis_client.setex).bind(redis_client);
-    delAsync = util.promisify(redis_client.del).bind(redis_client);
-
-    // Called when a new redis subscription is added
-    subscriber.on("subscribe", function(channel, count) {
-        //logit(`New subscription created for channel ${channel}, bring total to ${count}.`);
-    });
-
-    // Called when a new message is written to a channel
-    subscriber.on("message", function(channel, message) {
-        //logit(`Received a new message at channel '${channel}', message is '${message}'`);
-
-        // For messages being sent to the browser from the proxy
-        if (channel.startsWith('TOBROWSER_')) {
-            const browser_id = channel.replace('TOBROWSER_', '');
-            const browser_websocket = get_browser_proxy(browser_id);
-            browser_websocket.send(message);
-            return
-        }
-
-        // For messages being sent back to the proxy from the browser
-        if (channel.startsWith('TOPROXY_')) {
-            const browser_id = channel.replace('TOPROXY_', '');
-
-            try {
-                var inbound_message = JSON.parse(
-                    message
-                );
-            } catch (e) {
-                logit(`Error parsing message received from browser:`);
-                logit(`Message: ${message}`);
-                logit(`Exception: ${e}`);
-            }
-
-            // Check if it's an action we recognize.
-            if (inbound_message.action in RPC_CALL_TABLE) {
-                RPC_CALL_TABLE[inbound_message.action](browser_id, inbound_message.data);
-                return
-            }
-
-            // Check if we're tracking this response
-            if (REQUEST_TABLE.has(inbound_message.id)) {
-                //logit(`Resolving function for message ID ${inbound_message.id}...`);
-                const resolve = REQUEST_TABLE.take(inbound_message.id);
-                resolve(inbound_message.result);
-            }
-            return
-        }
-    });
-
-    wss = new WebSocket.Server({
-        port: WS_PORT
-    });
-
-    wss.on('connection', async function connection(ws) {
-        logit(`A new browser has connected to us via WebSocket!`);
-
-        ws.isAlive = true;
-
-        ws.on('close', async () => {
-            // Only do this if there's a valid browser ID for
-            // the WebSocket which has died.
-            if (ws.browser_id) {
-                logit(`WebSocket browser ${ws.browser_id} has disconnected.`);
-
-                // Unsubscribe from the browser topic since we can no longer send
-                // any messages to the browser anymore
-                subscriber.unsubscribe(`TOBROWSER_${ws.browser_id}`);
-
-                // Update browserproxy record to reflect being offline
-                var browserproxy_record = await Bots.findOne({
-                    where: {
-                        browser_id: ws.browser_id
-                    }
-                });
-                browserproxy_record.is_online = false;
-                await browserproxy_record.save();
-            } else {
-                logit(`Unauthenticated WebSocket has disconnected from us.`);
-            }
-        });
-
-        ws.on('pong', heartbeat);
-
-        ws.on('message', function incoming(message) {
-            try {
-                var inbound_message = JSON.parse(
-                    message
-                );
-            } catch (e) {
-                logit(`Error parsing message received from browser:`);
-                logit(`Message: ${message}`);
-                logit(`Exception: ${e}`);
-            }
-
-            // As a special case, if this is the result
-            // from an authentication request, we'll process it.
-            if (inbound_message.origin_action === 'AUTH') {
-                // Check if we're tracking this response
-                if (REQUEST_TABLE.has(inbound_message.id)) {
-                    //logit(`Resolving function for message ID ${inbound_message.id}...`)
-                    const resolve = REQUEST_TABLE.take(inbound_message.id);
-                    resolve(inbound_message.result);
-                }
-                return
-            } else if (inbound_message.action === 'PING') {
-                ping(ws);
-            } else if (ws.browser_id) {
-                // Write to redis proxy topic with the response from the
-                // websocket connection.
-                publisher.publish(`TOPROXY_${ws.browser_id}`, message);
-            } else {
-                logit(`Wat, this shouldn't happen? Orphaned message (somebody might be probing you!):`);
-                logit(message);
-            }
-        });
-
-        await initialize_new_browser_connection(ws);
-    });
-
-    wss.on('ready', () => {
-        logit(`CursedChrome WebSocket server is now running on port ${WS_PORT}.`)
-    });
 
     proxyServer = new AnyProxy.ProxyServer(options);
 
@@ -585,41 +448,22 @@ async function initialize() {
     logit(`Starting the HTTP proxy server...`)
     proxyServer.start();
 
-    logit(`Starting API server...`);
+    // logit(`Starting API server...`);
 
-    const proxy_utils = {
-        'get_browser_cookie_array': get_browser_cookie_array
-    };
+    // const proxy_utils = {
+    //     'get_browser_cookie_array': get_browser_cookie_array
+    // };
 
     // Start the API server
-    const api_server = await get_api_server(proxy_utils);
+    // const api_server = await get_api_server(proxy_utils);
 
-    api_server.listen(API_SERVER_PORT, () => {
-        logit(`CursedChrome API server is now listening on port ${API_SERVER_PORT}`);
-    });
+    // api_server.listen(API_SERVER_PORT, () => {
+    //     logit(`CursedChrome API server is now listening on port ${API_SERVER_PORT}`);
+    // });
 }
 
 (async () => {
-    // If we're the master process spin up workers
-    // If we're the worker processes, get to work!
-    if (cluster.isMaster) {
-        logit(`Master ${process.pid} is running`);
-
-        logit(`Initializing the database connection...`);
-        await database_init();
-
-        // Fork workers.
-        for (let i = 0; i < numCPUs; i++) {
-            cluster.fork();
-        }
-
-        cluster.on('exit', (worker, code, signal) => {
-            logit(`worker ${worker.process.pid} died`);
-        });
-    } else {
-        // Start worker
-        initialize();
-        logit(`Worker ${process.pid} started`);
-    }
+    logit(`Calling initialise()...`);
+    initialize();
 })();
 

@@ -593,14 +593,7 @@ function getConnectReqHandler(userRule, recorder, httpsServerMgr) {
       .then(() => {
         return new Promise((resolve) => {
         // mark socket connection as established, to detect the request protocol
-          if(proxy_authorization) {
-            cltSocket.write('HTTP/' + req.httpVersion + ' 200 OK\r\n\r\n', 'UTF-8', resolve);
-          } else {
-            cltSocket.end('HTTP/' + req.httpVersion + ' 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="Please provide your credentials."\r\n\r\n', 'UTF-8');
-            resolve();
-            return
-          }
-          
+          cltSocket.write('HTTP/' + req.httpVersion + ' 200 OK\r\n\r\n', 'UTF-8', resolve);    
         });
       })
       .then(() => {
